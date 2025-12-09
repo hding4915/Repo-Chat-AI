@@ -139,6 +139,7 @@ def render_chat():
                     message_placeholder.error("❌ Chain 初始化失敗")
             except Exception as e:
                 message_placeholder.error(f"發生錯誤: {e}")
+                print(response)
                 if messages and messages[-1]["role"] == "user": messages.pop()
 
     render_scroll_button()
