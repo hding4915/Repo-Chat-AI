@@ -6,7 +6,7 @@ from core.rag import get_qa_chain
 from core.storage import save_data, save_shared_chat
 
 
-# ... (Inject CSS 保持不變，為節省篇幅省略) ...
+# ... (CSS 樣式保持不變，為節省篇幅省略) ...
 def inject_custom_css():
     st.markdown("""
         <style>
@@ -26,17 +26,13 @@ def inject_custom_css():
 
 def save_current_state():
     settings = {
-        "api_key": st.session_state.api_key,  # Mistral Key
-        "ollama_url": st.session_state.ollama_url,  # Chat LLM URL
+        "api_key": st.session_state.api_key,
+        "ollama_url": st.session_state.ollama_url,
         "base_url": st.session_state.base_url,
-
-        # --- Embedding 設定 ---
         "emb_provider": st.session_state.get("emb_provider", "Ollama"),
         "emb_model": st.session_state.get("emb_model", "nomic-embed-text"),
         "emb_api_key": st.session_state.get("emb_api_key", ""),
-        "emb_ollama_url": st.session_state.get("emb_ollama_url", "http://localhost:11434"),  # 新增
-
-        # --- Chat 設定 ---
+        "emb_ollama_url": st.session_state.get("emb_ollama_url", "http://localhost:11434"),
         "llm_provider": st.session_state.get("llm_provider", "Mistral AI"),
         "mistral_model": st.session_state.get("mistral_model", "codestral-latest"),
         "google_api_key": st.session_state.get("google_api_key", ""),
@@ -48,7 +44,6 @@ def save_current_state():
     save_data(st.session_state.repos, settings)
 
 
-# ... (create_new_thread, delete_thread, rename_thread, convert_chat_to_markdown, dialogs, handle_delete_repo 保持不變) ...
 def create_new_thread(repo_url, thread_title="新對話"):
     thread_id = str(uuid.uuid4())[:8]
     st.session_state.repos[repo_url]["threads"][thread_id] = {"title": thread_title, "messages": []}
@@ -252,10 +247,13 @@ def render_settings():
         if selected_emb_provider == "Ollama":
             st.text_input("Model", value=st.session_state.get("emb_model", "nomic-embed-text"), key="input_emb_model",
                           on_change=update_settings)
-            # 這裡增加專用的 Embedding URL 輸入框，讀取 st.session_state.emb_ollama_url
             st.text_input("Embedding Ollama URL",
                           value=st.session_state.get("emb_ollama_url", "http://localhost:11434"),
                           key="input_emb_ollama_url", on_change=update_settings, help="若留空將使用下方基礎設施的設定")
+            # --- 關鍵新增：Ollama API Key ---
+            st.text_input("Ollama API Key", value=st.session_state.get("emb_api_key", ""), type="password",
+                          key="input_emb_api_key", on_change=update_settings,
+                          help="如果你使用 Proxy 或 Cloudflare Access，請在此輸入 Token")
 
         elif selected_emb_provider == "OpenAI":
             st.text_input("API Key", value=st.session_state.get("emb_api_key", ""), type="password",
@@ -309,14 +307,14 @@ def render_settings():
                       key="input_ollama_url", on_change=update_settings)
         st.text_input("網站公開網址 (Base URL)", value=st.session_state.get("base_url", ""),
                       placeholder="例如: https://hding49.uk", key="input_base_url", on_change=update_settings)
-        st.caption("v2.10.0 | Repo Chat AI")
+        st.caption("v2.11.0 | Repo Chat AI")
 
 
 def update_settings():
     if "input_emb_provider" in st.session_state: st.session_state.emb_provider = st.session_state.input_emb_provider
     if "input_emb_model" in st.session_state: st.session_state.emb_model = st.session_state.input_emb_model
     if "input_emb_api_key" in st.session_state: st.session_state.emb_api_key = st.session_state.input_emb_api_key
-    if "input_emb_ollama_url" in st.session_state: st.session_state.emb_ollama_url = st.session_state.input_emb_ollama_url  # Update embedding specific url
+    if "input_emb_ollama_url" in st.session_state: st.session_state.emb_ollama_url = st.session_state.input_emb_ollama_url
 
     if "input_llm_provider" in st.session_state: st.session_state.llm_provider = st.session_state.input_llm_provider
     if "input_ollama_url" in st.session_state: st.session_state.ollama_url = st.session_state.input_ollama_url
