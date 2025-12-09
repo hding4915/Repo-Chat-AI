@@ -6,7 +6,7 @@ from core.rag import get_qa_chain
 from core.storage import save_data, save_shared_chat
 
 
-# ... (CSS 樣式保持不變，直接複製 inject_custom_css) ...
+# ... (Inject CSS 保持不變，為節省篇幅省略) ...
 def inject_custom_css():
     st.markdown("""
         <style>
@@ -26,14 +26,15 @@ def inject_custom_css():
 
 def save_current_state():
     settings = {
-        "api_key": st.session_state.api_key,
-        "ollama_url": st.session_state.ollama_url,
+        "api_key": st.session_state.api_key,  # Mistral Key
+        "ollama_url": st.session_state.ollama_url,  # Chat LLM URL
         "base_url": st.session_state.base_url,
 
         # --- Embedding 設定 ---
         "emb_provider": st.session_state.get("emb_provider", "Ollama"),
         "emb_model": st.session_state.get("emb_model", "nomic-embed-text"),
         "emb_api_key": st.session_state.get("emb_api_key", ""),
+        "emb_ollama_url": st.session_state.get("emb_ollama_url", "http://localhost:11434"),  # 新增
 
         # --- Chat 設定 ---
         "llm_provider": st.session_state.get("llm_provider", "Mistral AI"),
@@ -251,6 +252,11 @@ def render_settings():
         if selected_emb_provider == "Ollama":
             st.text_input("Model", value=st.session_state.get("emb_model", "nomic-embed-text"), key="input_emb_model",
                           on_change=update_settings)
+            # 這裡增加專用的 Embedding URL 輸入框，讀取 st.session_state.emb_ollama_url
+            st.text_input("Embedding Ollama URL",
+                          value=st.session_state.get("emb_ollama_url", "http://localhost:11434"),
+                          key="input_emb_ollama_url", on_change=update_settings, help="若留空將使用下方基礎設施的設定")
+
         elif selected_emb_provider == "OpenAI":
             st.text_input("API Key", value=st.session_state.get("emb_api_key", ""), type="password",
                           key="input_emb_api_key", on_change=update_settings)
@@ -299,17 +305,18 @@ def render_settings():
 
         st.divider()
         st.markdown("#### 🏗️ 基礎設施")
-        st.text_input("Ollama URL", value=st.session_state.get("ollama_url", "http://localhost:11434"),
+        st.text_input("Ollama URL (Chat Default)", value=st.session_state.get("ollama_url", "http://localhost:11434"),
                       key="input_ollama_url", on_change=update_settings)
         st.text_input("網站公開網址 (Base URL)", value=st.session_state.get("base_url", ""),
                       placeholder="例如: https://hding49.uk", key="input_base_url", on_change=update_settings)
-        st.caption("v2.9.0 | Repo Chat AI")
+        st.caption("v2.10.0 | Repo Chat AI")
 
 
 def update_settings():
     if "input_emb_provider" in st.session_state: st.session_state.emb_provider = st.session_state.input_emb_provider
     if "input_emb_model" in st.session_state: st.session_state.emb_model = st.session_state.input_emb_model
     if "input_emb_api_key" in st.session_state: st.session_state.emb_api_key = st.session_state.input_emb_api_key
+    if "input_emb_ollama_url" in st.session_state: st.session_state.emb_ollama_url = st.session_state.input_emb_ollama_url  # Update embedding specific url
 
     if "input_llm_provider" in st.session_state: st.session_state.llm_provider = st.session_state.input_llm_provider
     if "input_ollama_url" in st.session_state: st.session_state.ollama_url = st.session_state.input_ollama_url
@@ -340,7 +347,9 @@ def process_repo(url, force=False):
             "provider": st.session_state.get("emb_provider", "Ollama"),
             "model": st.session_state.get("emb_model", "nomic-embed-text"),
             "api_key": st.session_state.get("emb_api_key", ""),
-            "base_url": st.session_state.get("ollama_url", "http://localhost:11434")
+            # 優先使用 embedding 專用 URL，沒有的話 fallback 到主機設定
+            "base_url": st.session_state.get("emb_ollama_url") or st.session_state.get("ollama_url",
+                                                                                       "http://localhost:11434")
         }
 
         _, status = ingest_repo(url, update_progress, force_update=force, embedding_config=embedding_config)
