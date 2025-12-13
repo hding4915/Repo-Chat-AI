@@ -2,7 +2,7 @@ import os
 import streamlit as st
 from core.ingestion import get_repo_id
 from core.config import VECTOR_STORE_DIR
-from core.factory import get_embedding_model  # 引入工廠
+from core.factory import get_embedding_model
 
 
 @st.cache_resource(show_spinner=False)
@@ -16,7 +16,6 @@ def get_retriever(repo_url, embedding_config):
     if not os.path.exists(db_path):
         return None
 
-        # --- 使用工廠還原 Embedding Model ---
     embedding_model = get_embedding_model(
         provider=embedding_config['provider'],
         model_name=embedding_config['model'],
@@ -29,60 +28,55 @@ def get_retriever(repo_url, embedding_config):
 
     db = Chroma(persist_directory=db_path, embedding_function=embedding_model)
 
+    # --- 還原設定：k=20 ---
+    # 抓取最相關的 20 個片段，這通常足夠包含 README 的核心內容，又不會有太多雜訊
     return db.as_retriever(
         search_type="mmr",
-        search_kwargs={"k": 30, "fetch_k": 100, "lambda_mult": 0.5}
+        search_kwargs={"k": 20, "fetch_k": 50}
     )
 
 
-def get_qa_chain(repo_url, api_key, ollama_url, embedding_config):
-    # Lazy Import
+def get_qa_chain(repo_url, api_key, ollama_url, embedding_config=None):
     from langchain_mistralai import ChatMistralAI
     from langchain_classic.prompts import PromptTemplate
     from langchain_classic.chains import ConversationalRetrievalChain
     from langchain_classic.memory import ConversationSummaryMemory
 
-    # 傳入 embedding_config 字典
+    if embedding_config is None:
+        embedding_config = {"provider": "Ollama", "model": "nomic-embed-text", "base_url": ollama_url}
+
     retriever = get_retriever(repo_url, embedding_config)
     if not retriever:
         return None
 
-    # LLM (Chat Model)
-    # 這裡我們假設 Chat Model 還是先用 Mistral (之後你可以再把 Chat Model 也改成工廠模式)
-    # 為了保持變動最小，這裡先不動 Chat 的邏輯
     llm = ChatMistralAI(
         api_key=api_key,
-        model_name="codestral-latest",
-        temperature=0.1,
+        model="codestral-latest",
+        temperature=0,  # 溫度設為 0，讓回答最穩定、最不瞎掰
         streaming=True
     )
 
-    memory = ConversationSummaryMemory(llm=llm, memory_key='chat_history', return_messages=True)
+    memory = ConversationSummaryMemory(
+        llm=llm,
+        memory_key='chat_history',
+        return_messages=True,
+        output_key='answer'
+    )
 
-    custom_template = """
-    You are a senior software architect and code analysis assistant.
-    You have access to a set of code snippets retrieved from a GitHub repository.
-    Each code snippet starts with "File: <path>".
+    # --- 還原設定：經典簡單 Prompt ---
+    # 不要叫它扮演偵探，也不要給太複雜的規則，直接給它資料叫它回答
+    custom_template = """Use the following pieces of context to answer the question at the end.
+    If you don't know the answer, just say that you don't know, don't try to make up an answer.
+    Answer in Traditional Chinese (繁體中文).
 
-    Your Goal: Answer the user's question accurately based ONLY on the provided context.
-
-    Guidelines:
-    1. **Project Overview**: If the user asks "what does this project do?", look for 'README.md', 'main.py', 'app.py', or 'index.js'.
-    2. **Inference**: If 'README.md' is missing, infer the project's purpose by analyzing file structure and imports.
-    3. **Transparency**: If context is insufficient, admit it.
-    4. **Language**: Always answer in the same language as the user's question.
-
-    Context from the repository:
-    --------------------------------
     {context}
-    --------------------------------
 
     Chat History:
     {chat_history}
 
-    User Question: {question}
+    Question: {question}
 
-    Your Professional Answer:"""
+    Answer:"""
 
     QA_CHAIN_PROMPT = PromptTemplate(
         input_variables=["context", "chat_history", "question"],
@@ -93,7 +87,8 @@ def get_qa_chain(repo_url, api_key, ollama_url, embedding_config):
         llm=llm,
         retriever=retriever,
         memory=memory,
-        combine_docs_chain_kwargs={"prompt": QA_CHAIN_PROMPT}
+        combine_docs_chain_kwargs={"prompt": QA_CHAIN_PROMPT},
+        return_source_documents=True  # 還是保留這個，方便你除錯看來源
     )
 
     return qa_chain

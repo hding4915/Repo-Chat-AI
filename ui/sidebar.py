@@ -5,8 +5,25 @@ from core.ingestion import ingest_repo, remove_repo_data
 from core.rag import get_qa_chain
 from core.storage import save_data, save_shared_chat
 
+# --- 0. 對話框裝飾器 ---
+if hasattr(st, "dialog"):
+    dialog_decorator = st.dialog
+elif hasattr(st, "experimental_dialog"):
+    dialog_decorator = st.experimental_dialog
+else:
+    def dialog_decorator(title):
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                st.info(f"💡 {title}")
+                with st.expander("點擊展開查看內容", expanded=True):
+                    func(*args, **kwargs)
 
-# ... (CSS 樣式保持不變，為節省篇幅省略) ...
+            return wrapper
+
+        return decorator
+
+
+# --- CSS 樣式注入 ---
 def inject_custom_css():
     st.markdown("""
         <style>
@@ -163,8 +180,10 @@ def render_sidebar():
         selected_repo_url = st.selectbox("切換專案", options=repo_options, index=current_index,
                                          format_func=get_repo_name, label_visibility="collapsed")
 
+        # --- 關鍵修正：切換專案時，強制清空 qa_chain ---
         if selected_repo_url != st.session_state.current_repo_url:
             st.session_state.current_repo_url = selected_repo_url
+            st.session_state.qa_chain = None  # 這裡！！！
             st.session_state.repos[selected_repo_url]["last_accessed"] = time.time()
             save_current_state()
             st.rerun()
@@ -231,7 +250,6 @@ def render_add_repo_ui():
 
 def render_settings():
     with st.expander("⚙️ 系統設定"):
-        # --- 1. Embedding 模型設定 (多來源) ---
         st.markdown("#### 🧠 Embedding 設定")
         emb_providers = ["Ollama", "OpenAI", "Mistral AI"]
         current_emb_provider = st.session_state.get("emb_provider", "Ollama")
@@ -249,11 +267,9 @@ def render_settings():
                           on_change=update_settings)
             st.text_input("Embedding Ollama URL",
                           value=st.session_state.get("emb_ollama_url", "http://localhost:11434"),
-                          key="input_emb_ollama_url", on_change=update_settings, help="若留空將使用下方基礎設施的設定")
-            # --- 關鍵新增：Ollama API Key ---
+                          key="input_emb_ollama_url", on_change=update_settings)
             st.text_input("Ollama API Key", value=st.session_state.get("emb_api_key", ""), type="password",
-                          key="input_emb_api_key", on_change=update_settings,
-                          help="如果你使用 Proxy 或 Cloudflare Access，請在此輸入 Token")
+                          key="input_emb_api_key", on_change=update_settings)
 
         elif selected_emb_provider == "OpenAI":
             st.text_input("API Key", value=st.session_state.get("emb_api_key", ""), type="password",
@@ -267,8 +283,6 @@ def render_settings():
                           on_change=update_settings)
 
         st.divider()
-
-        # --- 2. Chat 模型設定 ---
         st.markdown("#### 💬 Chat Model 設定")
         providers = ["Mistral AI", "Google Gemini", "Groq", "Ollama"]
         current_provider = st.session_state.get("llm_provider", "Mistral AI")
@@ -307,7 +321,7 @@ def render_settings():
                       key="input_ollama_url", on_change=update_settings)
         st.text_input("網站公開網址 (Base URL)", value=st.session_state.get("base_url", ""),
                       placeholder="例如: https://hding49.uk", key="input_base_url", on_change=update_settings)
-        st.caption("v2.11.0 | Repo Chat AI")
+        st.caption("v2.12.0 | Repo Chat AI")
 
 
 def update_settings():
@@ -340,12 +354,10 @@ def process_repo(url, force=False):
             p_bar.progress(max(0, min(100, p)))
             msg_placeholder.code(msg, language="text")
 
-        # 準備 Embedding 設定 (字典)
         embedding_config = {
             "provider": st.session_state.get("emb_provider", "Ollama"),
             "model": st.session_state.get("emb_model", "nomic-embed-text"),
             "api_key": st.session_state.get("emb_api_key", ""),
-            # 優先使用 embedding 專用 URL，沒有的話 fallback 到主機設定
             "base_url": st.session_state.get("emb_ollama_url") or st.session_state.get("ollama_url",
                                                                                        "http://localhost:11434")
         }

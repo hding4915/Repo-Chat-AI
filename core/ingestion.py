@@ -3,9 +3,11 @@ import shutil
 import hashlib
 import re
 import threading
+import stat
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.config import SUPPORTED_EXTENSIONS, REPO_DOWNLOAD_DIR, VECTOR_STORE_DIR
-from core.factory import get_embedding_model  # 引入工廠
+from core.factory import get_embedding_model
 
 try:
     from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
@@ -23,17 +25,24 @@ def clean_url(url):
     return url.strip()
 
 
+def force_remove_readonly(func, path, excinfo):
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception as e:
+        print(f"⚠️ 強制刪除失敗: {path}, 錯誤: {e}")
+
+
 def remove_repo_data(repo_url):
     repo_id = get_repo_id(repo_url)
     repo_path = os.path.join(REPO_DOWNLOAD_DIR, repo_id)
     db_path = os.path.join(VECTOR_STORE_DIR, repo_id)
     deleted = False
-    if os.path.exists(repo_path): shutil.rmtree(repo_path, ignore_errors=True); deleted = True
-    if os.path.exists(db_path): shutil.rmtree(db_path, ignore_errors=True); deleted = True
+    if os.path.exists(repo_path): shutil.rmtree(repo_path, onerror=force_remove_readonly); deleted = True
+    if os.path.exists(db_path): shutil.rmtree(db_path, onerror=force_remove_readonly); deleted = True
     return deleted
 
 
-# --- 關鍵修改：接收 embedding_config 字典 ---
 def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_config=None):
     import git
     from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -93,8 +102,8 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
             update_status("⚡ 版本未變，載入快取", 100)
             return db_path, "skipped"
 
-    if os.path.exists(repo_path): shutil.rmtree(repo_path, ignore_errors=True)
-    if os.path.exists(db_path): shutil.rmtree(db_path)
+    if os.path.exists(repo_path): shutil.rmtree(repo_path, onerror=force_remove_readonly)
+    if os.path.exists(db_path): shutil.rmtree(db_path, onerror=force_remove_readonly)
 
     update_status(f"⬇️ 開始 Clone (深度 1)...", 10)
     try:
@@ -109,9 +118,10 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
         raise Exception(f"Clone 失敗: {e}")
 
     update_status("📂 掃描檔案中...", 45)
-    documents = []
+    raw_documents = []
     MAX_FILES = 5000
     file_count = 0
+
     for root, dirs, files in os.walk(repo_path):
         if file_count >= MAX_FILES: break
         for file in files:
@@ -123,9 +133,12 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     if not content.strip(): continue
-                    content_with_context = f"File: {rel_path}\nRepo: {repo_url}\n\n{content}"
-                    doc = Document(page_content=content_with_context, metadata={"source": rel_path, "repo": repo_url})
-                    documents.append(doc)
+
+                    doc = Document(
+                        page_content=content,
+                        metadata={"source": rel_path, "repo": repo_url}
+                    )
+                    raw_documents.append(doc)
                     file_count += 1
                     if file_count >= MAX_FILES: break
                 except:
@@ -133,19 +146,34 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
         if file_count % 200 == 0: update_status(f"📂 已讀取 {file_count} 個檔案...",
                                                 45 + int(file_count / MAX_FILES * 15))
 
-    if not documents: raise Exception("No valid files found.")
+    if not raw_documents: raise Exception("No valid files found.")
 
-    update_status(f"✂️ 切分與整理...", 60)
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-    texts = text_splitter.split_documents(documents)
-    total_chunks = len(texts)
+    update_status(f"✂️ 切分與注入上下文...", 60)
 
-    # --- 使用工廠建立 Embedding Model ---
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1500,
+        chunk_overlap=150
+    )
+
+    split_docs = text_splitter.split_documents(raw_documents)
+
+    final_docs = []
+    for doc in split_docs:
+        rel_path = doc.metadata.get("source", "unknown")
+        doc.page_content = f"File: {rel_path}\nRepo: {repo_url}\n\n{doc.page_content}"
+        final_docs.append(doc)
+
+    total_chunks = len(final_docs)
+
     if not embedding_config:
-        # Default fallback
         embedding_config = {"provider": "Ollama", "model": "nomic-embed-text", "base_url": "http://localhost:11434"}
 
-    update_status(f"🧠 初始化向量計算 ({embedding_config['provider']}: {embedding_config['model']})...", 65)
+    # --- Debug Info ---
+    api_key_status = "有" if embedding_config.get('api_key') else "無"
+    print(f"DEBUG: Embedding URL: {embedding_config.get('base_url')}, Key: {api_key_status}")
+    # ------------------
+
+    update_status(f"🧠 初始化向量計算 ({embedding_config['provider']})...", 65)
 
     embedding_model = get_embedding_model(
         provider=embedding_config['provider'],
@@ -154,36 +182,71 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
         base_url=embedding_config.get('base_url')
     )
 
-    if not embedding_model:
-        raise Exception("Embedding 模型初始化失敗，請檢查設定")
+    if not embedding_model: raise Exception("Embedding 模型初始化失敗")
 
     db = Chroma(embedding_function=embedding_model, persist_directory=db_path)
-    BATCH_SIZE = 500
-    MAX_WORKERS = 4
+
+    # --- 參數調整 ---
+    BATCH_SIZE = 32  # 降低 Batch Size 避免 502/403
+    MAX_WORKERS = 8
 
     def compute_batch_embeddings(batch_docs):
-        b_texts = [d.page_content for d in batch_docs]
-        b_embeddings = embedding_model.embed_documents(b_texts)
-        return batch_docs, b_embeddings
+        # 加入重試機制
+        for attempt in range(3):
+            try:
+                b_texts = [d.page_content for d in batch_docs]
+                b_embeddings = embedding_model.embed_documents(b_texts)
+                return batch_docs, b_embeddings
+            except Exception as e:
+                if attempt == 2: raise e
+                time.sleep(1 * (attempt + 1))
 
     total_processed = 0
     futures = []
 
+    start_time = time.time()
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        update_status(f"🚀 正在分派 {total_chunks} 個片段至 GPU (Batch={BATCH_SIZE})...", 68)
+
         for i in range(0, total_chunks, BATCH_SIZE):
-            batch = texts[i: i + BATCH_SIZE]
+            batch = final_docs[i: i + BATCH_SIZE]
             futures.append(executor.submit(compute_batch_embeddings, batch))
+
+        total_batches = len(futures)
+        completed_batches = 0
 
         for future in as_completed(futures):
             try:
                 batch_docs, batch_embeddings = future.result()
                 db.add_texts(texts=[d.page_content for d in batch_docs], metadatas=[d.metadata for d in batch_docs],
                              embeddings=batch_embeddings)
+
                 total_processed += len(batch_docs)
+                completed_batches += 1
+
+                # 計算 ETA
+                elapsed_time = time.time() - start_time
+                if completed_batches > 0:
+                    avg_time_per_batch = elapsed_time / completed_batches
+                    remaining_batches = total_batches - completed_batches
+                    eta_seconds = int(remaining_batches * avg_time_per_batch)
+
+                    if eta_seconds < 60:
+                        eta_str = f"{eta_seconds}s"
+                    else:
+                        eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s"
+                else:
+                    eta_str = "計算中..."
+
                 progress_percent = 70 + int((total_processed / total_chunks) * 29)
-                update_status(f"🧠 Embedding: {total_processed}/{total_chunks}", progress_percent)
+
+                msg = f"🧠 Embedding: {total_processed}/{total_chunks} ({int(total_processed / total_chunks * 100)}%) | 剩餘時間: {eta_str}"
+                update_status(msg, progress_percent)
+
             except Exception as e:
                 print(f"⚠️ Batch embedding 失敗: {e}")
+                # 這裡不拋出異常，讓其他 batch 繼續跑。但在 UI 上顯示錯誤可能會嚇到人，這裡僅 print 到後台
 
     if latest_hash:
         os.makedirs(db_path, exist_ok=True)
