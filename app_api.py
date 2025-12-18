@@ -189,5 +189,5 @@ def api_chat():
 
 
 if __name__ == '__main__':
-    print("🚀 Repo Chat API Server running on port 5000")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    print("🚀 Repo Chat API Server running on port 12345")
+    app.run(host='0.0.0.0', port=12345, debug=True)
