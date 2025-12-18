@@ -1,3 +1,4 @@
+# ... (imports 保持不變) ...
 import streamlit as st
 import uuid
 import time
@@ -5,25 +6,8 @@ from core.ingestion import ingest_repo, remove_repo_data
 from core.rag import get_qa_chain
 from core.storage import save_data, save_shared_chat
 
-# --- 0. 對話框裝飾器 ---
-if hasattr(st, "dialog"):
-    dialog_decorator = st.dialog
-elif hasattr(st, "experimental_dialog"):
-    dialog_decorator = st.experimental_dialog
-else:
-    def dialog_decorator(title):
-        def decorator(func):
-            def wrapper(*args, **kwargs):
-                st.info(f"💡 {title}")
-                with st.expander("點擊展開查看內容", expanded=True):
-                    func(*args, **kwargs)
 
-            return wrapper
-
-        return decorator
-
-
-# --- CSS 樣式注入 ---
+# ... (CSS 注入函式保持不變) ...
 def inject_custom_css():
     st.markdown("""
         <style>
@@ -41,6 +25,7 @@ def inject_custom_css():
     """, unsafe_allow_html=True)
 
 
+# ... (Helper functions: save_current_state, create_new_thread, delete_thread, rename_thread, convert_chat_to_markdown, dialogs, handle_delete_repo 保持不變，為了節省篇幅省略，請務必保留) ...
 def save_current_state():
     settings = {
         "api_key": st.session_state.api_key,
@@ -159,6 +144,24 @@ def handle_delete_repo(repo_url):
     st.rerun()
 
 
+# --- 修改處：更新 render_add_repo_ui 的 placeholder 與提示 ---
+def render_add_repo_ui():
+    st.markdown("#### Clone 新專案")
+
+    # 更新提示，讓使用者知道可以貼 SSH
+    new_repo_url = st.text_input(
+        "GitHub URL",
+        placeholder="https://... 或 git@github.com:...",
+        help="支援公開 HTTPS 網址，或私有倉庫的 SSH 網址 (需在本地配置 SSH Key)"
+    )
+
+    if st.button("載入 Repo", type="primary", use_container_width=True, key="btn_load_repo"):
+        if not new_repo_url:
+            st.error("網址不能為空")
+        else:
+            process_repo(new_repo_url)
+
+
 def render_sidebar():
     inject_custom_css()
     with st.sidebar:
@@ -180,10 +183,9 @@ def render_sidebar():
         selected_repo_url = st.selectbox("切換專案", options=repo_options, index=current_index,
                                          format_func=get_repo_name, label_visibility="collapsed")
 
-        # --- 關鍵修正：切換專案時，強制清空 qa_chain ---
         if selected_repo_url != st.session_state.current_repo_url:
             st.session_state.current_repo_url = selected_repo_url
-            st.session_state.qa_chain = None  # 這裡！！！
+            st.session_state.qa_chain = None
             st.session_state.repos[selected_repo_url]["last_accessed"] = time.time()
             save_current_state()
             st.rerun()
@@ -236,16 +238,6 @@ def render_sidebar():
 
         st.markdown("<br>" * 2, unsafe_allow_html=True)
         render_settings()
-
-
-def render_add_repo_ui():
-    st.markdown("#### Clone 新專案")
-    new_repo_url = st.text_input("GitHub URL", placeholder="https://github.com/...")
-    if st.button("載入 Repo", type="primary", use_container_width=True, key="btn_load_repo"):
-        if not new_repo_url:
-            st.error("網址不能為空")
-        else:
-            process_repo(new_repo_url)
 
 
 def render_settings():
@@ -321,7 +313,7 @@ def render_settings():
                       key="input_ollama_url", on_change=update_settings)
         st.text_input("網站公開網址 (Base URL)", value=st.session_state.get("base_url", ""),
                       placeholder="例如: https://hding49.uk", key="input_base_url", on_change=update_settings)
-        st.caption("v2.12.0 | Repo Chat AI")
+        st.caption("v2.13.0 | Repo Chat AI")
 
 
 def update_settings():

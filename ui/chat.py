@@ -50,120 +50,135 @@ else:
         return decorator
 
 
-# --- 4. JS 注入: 回到底部按鈕 ---
+# --- 4. JS 注入: 回到底部按鈕 (修復上下文失效問題) ---
 def render_scroll_button():
     """
     注入 JavaScript 以建立一個懸浮按鈕。
-    修正版：調整位置、增加 Z-Index、並加入除錯用的強制顯示邏輯。
+    每次執行時強制重建按鈕，確保 Event Listener 綁定到正確的 Context。
     """
     scroll_js = """
     <script>
         (function() {
             var btnId = "scroll-to-bottom-btn";
+            var doc = window.parent.document;
 
-            function createBtn() {
-                var doc = window.parent.document;
-
-                if (doc.getElementById(btnId)) {
-                    return doc.getElementById(btnId);
-                }
-
-                var btn = doc.createElement("button");
-                btn.id = btnId;
-                btn.innerHTML = "⬇";
-                btn.title = "回到最新內容";
-
-                btn.style.cssText = `
-                    position: fixed !important;
-                    bottom: 150px !important;
-                    right: 30px !important;
-                    z-index: 2147483647 !important;
-                    background-color: #4CAF50 !important;
-                    color: white !important;
-                    border: none !important;
-                    border-radius: 50% !important;
-                    width: 50px !important;
-                    height: 50px !important;
-                    font-size: 24px !important;
-                    cursor: pointer !important;
-                    box-shadow: 0px 4px 12px rgba(0,0,0,0.5) !important;
-                    display: flex !important;
-                    align-items: center !important;
-                    justify-content: center !important;
-                    transition: opacity 0.3s, transform 0.2s !important;
-                    opacity: 0 !important;
-                    pointer-events: auto !important;
-                `;
-
-                btn.onclick = function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    var container = getScrollContainer();
-                    if (container) {
-                        container.scrollTo({
-                            top: container.scrollHeight,
-                            behavior: 'smooth'
-                        });
-                    }
-                };
-
-                btn.onmouseenter = function() { btn.style.transform = "scale(1.1)"; };
-                btn.onmouseleave = function() { btn.style.transform = "scale(1)"; };
-
-                doc.body.appendChild(btn);
-                return btn;
+            // --- 關鍵修正：先移除舊按鈕 ---
+            // 這是為了確保按鈕的 click 事件綁定到「當前」的 iframe context
+            // 否則切換 Repo 後，按鈕會呼叫到已經死亡的舊 script function
+            var existingBtn = doc.getElementById(btnId);
+            if (existingBtn) {
+                existingBtn.remove();
             }
 
+            // 建立新按鈕
+            var btn = doc.createElement("button");
+            btn.id = btnId;
+            btn.innerHTML = "⬇";
+            btn.title = "回到最新內容";
+
+            btn.style.cssText = `
+                position: fixed !important;
+                bottom: 150px !important;
+                right: 30px !important;
+                z-index: 2147483647 !important;
+                background-color: #4CAF50 !important;
+                color: white !important;
+                border: none !important;
+                border-radius: 50% !important;
+                width: 50px !important;
+                height: 50px !important;
+                font-size: 24px !important;
+                cursor: pointer !important;
+                box-shadow: 0px 4px 12px rgba(0,0,0,0.5) !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                transition: opacity 0.3s, transform 0.2s !important;
+                opacity: 0 !important;
+                pointer-events: none !important; /* 預設不擋滑鼠，顯示後改 auto */
+            `;
+
+            // 綁定新的點擊事件
+            btn.onclick = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var container = getScrollContainer();
+                if (container) {
+                    container.scrollTo({
+                        top: container.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                }
+            };
+
+            btn.onmouseenter = function() { 
+                btn.style.transform = "scale(1.1)"; 
+                btn.style.backgroundColor = "#45a049";
+            };
+            btn.onmouseleave = function() { 
+                btn.style.transform = "scale(1)"; 
+                btn.style.backgroundColor = "#4CAF50";
+            };
+
+            doc.body.appendChild(btn);
+
+            // 核心修改：智慧尋找容器
             function getScrollContainer() {
                 var doc = window.parent.document;
-                var candidates = [
-                    '[data-testid="stAppViewContainer"]',
-                    '.main',
-                    'section[tabindex="0"]'
-                ];
 
-                for (var i = 0; i < candidates.length; i++) {
-                    var el = doc.querySelector(candidates[i]);
-                    if (el && el.scrollHeight > el.clientHeight) {
-                        return el;
+                // 1. 優先檢查標準 Streamlit 容器
+                var candidate = doc.querySelector('[data-testid="stAppViewContainer"]');
+                if (candidate && candidate.scrollHeight > candidate.clientHeight) {
+                    return candidate;
+                }
+
+                // 2. 備用方案：遍歷 div 找最高的捲動層
+                var allDivs = doc.querySelectorAll('div, section');
+                var bestCandidate = doc.body;
+                var maxScrollHeight = 0;
+
+                for (var i = 0; i < allDivs.length; i++) {
+                    var el = allDivs[i];
+                    if (el.scrollHeight > el.clientHeight && el.clientHeight > 100) {
+                        if (el.scrollHeight > maxScrollHeight) {
+                            maxScrollHeight = el.scrollHeight;
+                            bestCandidate = el;
+                        }
                     }
                 }
-                return doc.body;
+                return bestCandidate;
             }
 
             function checkScroll() {
-                var btn = createBtn();
-                var container = getScrollContainer();
+                // 如果按鈕被意外移除 (例如 React 重繪)，補回去
+                if (!doc.getElementById(btnId)) {
+                    doc.body.appendChild(btn);
+                }
 
+                var container = getScrollContainer();
                 if (!container) return;
 
-                if (container.scrollHeight <= container.clientHeight) {
-                    btn.style.opacity = "0";
-                    btn.style.pointerEvents = "none";
-                    return;
-                }
-
+                // 計算距離底部的距離
                 var dist = container.scrollHeight - container.scrollTop - container.clientHeight;
+                var isScrollable = container.scrollHeight > container.clientHeight;
 
-                if (dist > 100) {
-                    btn.style.opacity = "1";
-                    btn.style.pointerEvents = "auto";
+                // 只要距離底部超過 150px 且真的有長度，就顯示
+                if (isScrollable && dist > 150) {
+                    if (btn.style.opacity !== "1") {
+                        btn.style.opacity = "1";
+                        btn.style.pointerEvents = "auto"; // 開啟點擊
+                    }
                 } else {
-                    btn.style.opacity = "0";
-                    btn.style.pointerEvents = "none";
+                    if (btn.style.opacity !== "0") {
+                        btn.style.opacity = "0";
+                        btn.style.pointerEvents = "none"; // 關閉點擊
+                    }
                 }
             }
 
-            setInterval(checkScroll, 500);
-
-            var container = getScrollContainer();
-            if (container) {
-                container.addEventListener("scroll", checkScroll);
-            }
-
-            var btn = createBtn();
-            btn.style.opacity = "1";
-            setTimeout(() => { checkScroll(); }, 2000);
+            // 定時檢查
+            setInterval(checkScroll, 500); 
+            setTimeout(checkScroll, 100);
 
         })();
     </script>
@@ -181,6 +196,7 @@ def share_dialog(repo_url, repo_name, current_thread):
         share_link = f"{base}/?share_id={share_id}"
         st.success("連結建立成功！")
         st.code(share_link, language="text")
+        st.caption("提示: 對方點擊連結後，可以將此對話匯入到他們的 Repo Chat 中。")
     else:
         st.error("建立失敗")
 
@@ -211,8 +227,11 @@ def render_chat():
             st.markdown(msg["content"])
             if "sources" in msg:
                 with st.expander("📚 參考文件來源 (已存檔)", expanded=False):
+                    seen_sources = set()
                     for source in msg["sources"]:
-                        st.caption(f"📄 `{source}`")
+                        if source not in seen_sources:
+                            st.caption(f"📄 `{source}`")
+                            seen_sources.add(source)
 
     if prompt := st.chat_input("請問關於這個程式碼的問題..."):
         is_first_message = (len(messages) == 0)
@@ -255,11 +274,9 @@ def render_chat():
                     sources_list = []
                     if source_docs:
                         with st.expander("📚 參考文件來源", expanded=False):
-                            # --- 關鍵修正：去重邏輯 ---
                             seen_sources = set()
                             for doc in source_docs:
                                 source_name = doc.metadata.get("source", "Unknown File")
-                                # 只有當這個檔名還沒出現過時，才顯示並加入列表
                                 if source_name not in seen_sources:
                                     st.caption(f"📄 `{source_name}`")
                                     seen_sources.add(source_name)
@@ -268,7 +285,7 @@ def render_chat():
                     messages.append({
                         "role": "assistant",
                         "content": answer,
-                        "sources": sources_list
+                        "sources": list(set(sources_list))
                     })
                     save_chat_history()
                     if is_first_message: st.rerun()
@@ -278,4 +295,5 @@ def render_chat():
                 message_placeholder.error(f"發生錯誤: {e}")
                 if messages and messages[-1]["role"] == "user": messages.pop()
 
+    # 呼叫 JS 注入
     render_scroll_button()

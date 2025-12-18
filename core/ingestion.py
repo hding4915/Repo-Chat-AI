@@ -16,11 +16,17 @@ except ImportError:
 
 
 def get_repo_id(repo_url):
+    # 包含 #branch 在內的完整字串做 Hash，這樣不同分支會存成不同 ID
     return hashlib.md5(repo_url.strip().rstrip("/").encode()).hexdigest()
 
 
 def clean_url(url):
-    match = re.search(r'(https?://[^\s]+)', url)
+    """
+    淨化 URL，支援 HTTPS 和 SSH 格式。
+    同時保留 #branch 資訊以便後續解析。
+    """
+    # 這裡的 Regex 會抓取直到空白為止的字串，包含 #
+    match = re.search(r'((?:https?://|git@)[^\s]+)', url)
     if match: return match.group(1)
     return url.strip()
 
@@ -75,11 +81,21 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
                 msg = f"⬇️ {operation}: {cur_count} objects..."
             if progress_callback: progress_callback(msg, ui_progress)
 
-    original_url = repo_url
+    # 1. 處理 URL 與 Branch
     repo_url = clean_url(repo_url)
-    if original_url != repo_url: print(f"⚠️ 網址修正: {repo_url}")
 
-    repo_id = get_repo_id(repo_url)
+    # 解析 #branch 語法
+    target_branch = None
+    if "#" in repo_url:
+        repo_url, target_branch = repo_url.rsplit("#", 1)
+        print(f"📍 偵測到指定分支: {target_branch}")
+
+    # 2. 計算 ID (使用包含分支的原始 URL 概念，但這裡為了方便重新組裝字串傳給 get_repo_id)
+    # 注意：我們已經在外面傳進來的時候決定了 repo_url (含 #)，所以 get_repo_id 會算出唯一的 ID
+    # 這裡我們需要用 "原始的完整輸入" 來算 ID，確保不同分支分開存
+    full_url_for_id = f"{repo_url}#{target_branch}" if target_branch else repo_url
+    repo_id = get_repo_id(full_url_for_id)
+
     repo_path = os.path.join(REPO_DOWNLOAD_DIR, repo_id)
     db_path = os.path.join(VECTOR_STORE_DIR, repo_id)
     hash_file = os.path.join(VECTOR_STORE_DIR, repo_id, "commit_hash.txt")
@@ -87,11 +103,14 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
     def update_status(msg, progress):
         if progress_callback: progress_callback(msg, progress)
 
+    # 0. 檢查 Hash (ls-remote 也支援分支)
     update_status("🔍 檢查版本...", 5)
     g = git.cmd.Git()
     try:
         g.config("--global", "http.postBuffer", "524288000")
-        latest_hash = g.ls_remote(repo_url, 'HEAD').split('\t')[0]
+        # 如果有指定分支，ls-remote 需要指定 ref
+        ref = target_branch if target_branch else 'HEAD'
+        latest_hash = g.ls_remote(repo_url, ref).split('\t')[0]
     except Exception:
         latest_hash = None
 
@@ -105,14 +124,26 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
     if os.path.exists(repo_path): shutil.rmtree(repo_path, onerror=force_remove_readonly)
     if os.path.exists(db_path): shutil.rmtree(db_path, onerror=force_remove_readonly)
 
-    update_status(f"⬇️ 開始 Clone (深度 1)...", 10)
+    # 1. Clone (支援分支參數)
+    update_status(f"⬇️ 開始 Clone ({target_branch if target_branch else 'Default'})...", 10)
     try:
-        git.Repo.clone_from(repo_url, repo_path, depth=1, single_branch=True, progress=CloneProgress())
+        clone_kwargs = {
+            "depth": 1,
+            "single_branch": True,
+            "progress": CloneProgress()
+        }
+        if target_branch:
+            clone_kwargs["branch"] = target_branch
+
+        git.Repo.clone_from(repo_url, repo_path, **clone_kwargs)
+
     except Exception as e:
         error_msg = str(e)
         if "exit code(128)" in error_msg:
             if "not found" in error_msg.lower():
                 raise Exception(f"找不到專案: {repo_url}")
+            elif "permission denied" in error_msg.lower() or "publickey" in error_msg.lower():
+                raise Exception(f"SSH 權限拒絕。請確認 SSH Key 設定。\n網址: {repo_url}")
             else:
                 raise Exception(f"Git Clone 失敗: {error_msg}")
         raise Exception(f"Clone 失敗: {e}")
@@ -136,7 +167,7 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
 
                     doc = Document(
                         page_content=content,
-                        metadata={"source": rel_path, "repo": repo_url}
+                        metadata={"source": rel_path, "repo": repo_url}  # 這裡 repo 只存 URL，不一定要存 branch
                     )
                     raw_documents.append(doc)
                     file_count += 1
@@ -168,11 +199,6 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
     if not embedding_config:
         embedding_config = {"provider": "Ollama", "model": "nomic-embed-text", "base_url": "http://localhost:11434"}
 
-    # --- Debug Info ---
-    api_key_status = "有" if embedding_config.get('api_key') else "無"
-    print(f"DEBUG: Embedding URL: {embedding_config.get('base_url')}, Key: {api_key_status}")
-    # ------------------
-
     update_status(f"🧠 初始化向量計算 ({embedding_config['provider']})...", 65)
 
     embedding_model = get_embedding_model(
@@ -186,12 +212,10 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
 
     db = Chroma(embedding_function=embedding_model, persist_directory=db_path)
 
-    # --- 參數調整 ---
-    BATCH_SIZE = 32  # 降低 Batch Size 避免 502/403
-    MAX_WORKERS = 8
+    BATCH_SIZE = 64
+    MAX_WORKERS = 12
 
     def compute_batch_embeddings(batch_docs):
-        # 加入重試機制
         for attempt in range(3):
             try:
                 b_texts = [d.page_content for d in batch_docs]
@@ -203,19 +227,16 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
 
     total_processed = 0
     futures = []
-
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        update_status(f"🚀 正在分派 {total_chunks} 個片段至 GPU (Batch={BATCH_SIZE})...", 68)
+        update_status(f"🚀 全速運算中... (Chunks={total_chunks})", 68)
 
         for i in range(0, total_chunks, BATCH_SIZE):
             batch = final_docs[i: i + BATCH_SIZE]
             futures.append(executor.submit(compute_batch_embeddings, batch))
 
-        total_batches = len(futures)
         completed_batches = 0
-
         for future in as_completed(futures):
             try:
                 batch_docs, batch_embeddings = future.result()
@@ -225,13 +246,11 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
                 total_processed += len(batch_docs)
                 completed_batches += 1
 
-                # 計算 ETA
                 elapsed_time = time.time() - start_time
                 if completed_batches > 0:
                     avg_time_per_batch = elapsed_time / completed_batches
-                    remaining_batches = total_batches - completed_batches
+                    remaining_batches = len(futures) - completed_batches
                     eta_seconds = int(remaining_batches * avg_time_per_batch)
-
                     if eta_seconds < 60:
                         eta_str = f"{eta_seconds}s"
                     else:
@@ -240,13 +259,10 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
                     eta_str = "計算中..."
 
                 progress_percent = 70 + int((total_processed / total_chunks) * 29)
-
                 msg = f"🧠 Embedding: {total_processed}/{total_chunks} ({int(total_processed / total_chunks * 100)}%) | 剩餘時間: {eta_str}"
                 update_status(msg, progress_percent)
-
             except Exception as e:
                 print(f"⚠️ Batch embedding 失敗: {e}")
-                # 這裡不拋出異常，讓其他 batch 繼續跑。但在 UI 上顯示錯誤可能會嚇到人，這裡僅 print 到後台
 
     if latest_hash:
         os.makedirs(db_path, exist_ok=True)
