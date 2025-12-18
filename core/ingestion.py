@@ -16,16 +16,10 @@ except ImportError:
 
 
 def get_repo_id(repo_url):
-    # 包含 #branch 在內的完整字串做 Hash，這樣不同分支會存成不同 ID
     return hashlib.md5(repo_url.strip().rstrip("/").encode()).hexdigest()
 
 
 def clean_url(url):
-    """
-    淨化 URL，支援 HTTPS 和 SSH 格式。
-    同時保留 #branch 資訊以便後續解析。
-    """
-    # 這裡的 Regex 會抓取直到空白為止的字串，包含 #
     match = re.search(r'((?:https?://|git@)[^\s]+)', url)
     if match: return match.group(1)
     return url.strip()
@@ -81,18 +75,13 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
                 msg = f"⬇️ {operation}: {cur_count} objects..."
             if progress_callback: progress_callback(msg, ui_progress)
 
-    # 1. 處理 URL 與 Branch
     repo_url = clean_url(repo_url)
 
-    # 解析 #branch 語法
     target_branch = None
     if "#" in repo_url:
         repo_url, target_branch = repo_url.rsplit("#", 1)
         print(f"📍 偵測到指定分支: {target_branch}")
 
-    # 2. 計算 ID (使用包含分支的原始 URL 概念，但這裡為了方便重新組裝字串傳給 get_repo_id)
-    # 注意：我們已經在外面傳進來的時候決定了 repo_url (含 #)，所以 get_repo_id 會算出唯一的 ID
-    # 這裡我們需要用 "原始的完整輸入" 來算 ID，確保不同分支分開存
     full_url_for_id = f"{repo_url}#{target_branch}" if target_branch else repo_url
     repo_id = get_repo_id(full_url_for_id)
 
@@ -103,12 +92,10 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
     def update_status(msg, progress):
         if progress_callback: progress_callback(msg, progress)
 
-    # 0. 檢查 Hash (ls-remote 也支援分支)
     update_status("🔍 檢查版本...", 5)
     g = git.cmd.Git()
     try:
         g.config("--global", "http.postBuffer", "524288000")
-        # 如果有指定分支，ls-remote 需要指定 ref
         ref = target_branch if target_branch else 'HEAD'
         latest_hash = g.ls_remote(repo_url, ref).split('\t')[0]
     except Exception:
@@ -124,7 +111,6 @@ def ingest_repo(repo_url, progress_callback=None, force_update=False, embedding_
     if os.path.exists(repo_path): shutil.rmtree(repo_path, onerror=force_remove_readonly)
     if os.path.exists(db_path): shutil.rmtree(db_path, onerror=force_remove_readonly)
 
-    # 1. Clone (支援分支參數)
     update_status(f"⬇️ 開始 Clone ({target_branch if target_branch else 'Default'})...", 10)
     try:
         clone_kwargs = {

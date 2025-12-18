@@ -4,7 +4,6 @@ from core.storage import save_data, save_shared_chat
 from langchain_classic.callbacks.base import BaseCallbackHandler
 
 
-# --- 1. 定義 StreamHandler ---
 class StreamHandler(BaseCallbackHandler):
     def __init__(self, container, initial_text=""):
         self.container = container
@@ -15,7 +14,6 @@ class StreamHandler(BaseCallbackHandler):
         self.container.markdown(self.text + "▌")
 
 
-# --- 2. 存檔 helper ---
 def save_chat_history():
     settings = {
         "api_key": st.session_state.api_key,
@@ -34,7 +32,6 @@ def convert_chat_to_markdown(title, messages, repo_name):
     return md_content
 
 
-# --- 3. 對話框裝飾器 ---
 if hasattr(st, "dialog"):
     dialog_decorator = st.dialog
 elif hasattr(st, "experimental_dialog"):
@@ -50,12 +47,7 @@ else:
         return decorator
 
 
-# --- 4. JS 注入: 回到底部按鈕 (修復上下文失效問題) ---
 def render_scroll_button():
-    """
-    注入 JavaScript 以建立一個懸浮按鈕。
-    每次執行時強制重建按鈕，確保 Event Listener 綁定到正確的 Context。
-    """
     scroll_js = """
     <script>
         (function() {
@@ -186,7 +178,6 @@ def render_scroll_button():
     components.html(scroll_js, height=0, width=0)
 
 
-# --- Share Dialog 函式 ---
 @dialog_decorator("🔗 分享對話")
 def share_dialog(repo_url, repo_name, current_thread):
     st.markdown("正在建立公開連結...")
@@ -295,5 +286,4 @@ def render_chat():
                 message_placeholder.error(f"發生錯誤: {e}")
                 if messages and messages[-1]["role"] == "user": messages.pop()
 
-    # 呼叫 JS 注入
     render_scroll_button()

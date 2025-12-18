@@ -1,4 +1,3 @@
-# ... (imports 保持不變) ...
 import streamlit as st
 import uuid
 import time
@@ -7,7 +6,6 @@ from core.rag import get_qa_chain
 from core.storage import save_data, save_shared_chat
 
 
-# ... (CSS 注入函式保持不變) ...
 def inject_custom_css():
     st.markdown("""
         <style>
@@ -144,7 +142,6 @@ def handle_delete_repo(repo_url):
     st.rerun()
 
 
-# --- 修改處：更新 render_add_repo_ui 的 placeholder 與提示 ---
 def render_add_repo_ui():
     st.markdown("#### Clone 新專案")
 

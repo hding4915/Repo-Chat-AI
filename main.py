@@ -1,13 +1,12 @@
 import streamlit as st
 
-# --- ☁️ Streamlit Cloud 部署專用修正 ---
+
 try:
     __import__('pysqlite3')
     import sys
     sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 except ImportError:
     pass
-# ------------------------------------
 
 import uuid
 from ui.sidebar import render_sidebar
@@ -27,13 +26,11 @@ else:
             return wrapper
         return decorator
 
-# --- 1. 初始化資料 ---
 loaded_repos, loaded_settings = load_data()
 
 if "repos" not in st.session_state: st.session_state.repos = loaded_repos
 
-# --- 初始化 Settings (包含新的 Env Vars) ---
-# 使用 setdefault 確保有預設值
+
 st.session_state.setdefault("api_key", loaded_settings.get("api_key", ""))
 st.session_state.setdefault("ollama_url", loaded_settings.get("ollama_url", "http://localhost:11434"))
 st.session_state.setdefault("base_url", loaded_settings.get("base_url", "http://localhost:8501"))
@@ -63,7 +60,6 @@ if "current_repo_url" not in st.session_state:
 if "qa_chain" not in st.session_state:
     st.session_state.qa_chain = None
 
-# --- 2. 檢查分享連結 ---
 query_params = st.query_params
 share_id = query_params.get("share_id")
 
@@ -86,10 +82,11 @@ if share_id:
                 st.session_state.repos[repo_url]["threads"][new_thread_id] = { "title": f"(匯入) {shared_data['thread_title']}", "messages": shared_data['messages'] }
                 st.session_state.current_repo_url = repo_url
                 st.session_state.repos[repo_url]["active_thread_id"] = new_thread_id
+
                 import time
                 st.session_state.repos[repo_url]["last_accessed"] = time.time()
+
                 from core.storage import save_data
-                # 重新打包 settings 存檔，避免覆蓋掉新載入的 env vars
                 current_settings = {k: st.session_state.get(k) for k in loaded_settings.keys()}
                 save_data(st.session_state.repos, current_settings)
                 st.query_params.clear()
